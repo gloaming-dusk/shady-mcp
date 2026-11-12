@@ -140,7 +140,10 @@ static bool shady(struct result *r, struct buf *req, int timeout_ms, struct json
 	const struct json *ok = json_get(reply, "ok");
 	if (!ok || ok->type != JSON_BOOL || !ok->boolean) {
 		const char *message = json_get_string(reply, "error");
-		result_fail(r, "Shady: %s", message ? message : "request failed");
+		/* An older Shady: the commands this uses came with 0.4.0. */
+		bool old = message && !strcmp(message, "unknown command");
+		result_fail(r, "Shady: %s%s", message ? message : "request failed",
+			old ? " (this Shady is too old: shady-mcp needs Shady 0.4.0 or later)" : "");
 		json_free(reply);
 		return false;
 	}
@@ -386,9 +389,15 @@ static bool tool_key(const struct json *args, struct result *r) {
 		const struct json *sent = json_get(d, "sent");
 		bool h = handled && handled->type == JSON_BOOL && handled->boolean;
 		bool s = sent && sent->type == JSON_BOOL && sent->boolean;
-		result_text(r, "%s %s: %s", cmd, keys,
-			h ? "a compositor shortcut took it" :
-			s ? "sent to the focused window" : "nothing took it (no such key in the keymap)");
+		if (!h && !sent) {
+			/* Before 0.4.0 an unbound key reached no window, and said nothing. */
+			result_fail(r, "%s %s: no shortcut took it, and this Shady is too old to send "
+				"keys to windows (shady-mcp needs Shady 0.4.0 or later)", cmd, keys);
+		} else {
+			result_text(r, "%s %s: %s", cmd, keys,
+				h ? "a compositor shortcut took it" :
+				s ? "sent to the focused window" : "nothing took it (no such key in the keymap)");
+		}
 	}
 	json_free(answer);
 	return ok;
