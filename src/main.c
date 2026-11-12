@@ -222,11 +222,13 @@ static bool tool_screenshot(const struct json *args, struct result *r) {
 	const struct json *settle = json_get(args, "settle");
 	struct json *answer = NULL;
 	if (!settle || settle->type != JSON_BOOL || settle->boolean) {
-		/* What a person would see: after the screen stops changing. */
+		/* What a person would see: once the windows (or this one) stop
+		 * changing. A bar's clock does not count. */
 		struct buf req = {0};
 		req_begin(&req, "wait");
 		req_num(&req, "idle", 150);
 		req_num(&req, "timeout", 1500);
+		if (window > 0) req_num(&req, "window", window);
 		bool ok = shady(r, &req, 5000, &answer);
 		buf_free(&req);
 		json_free(answer);
@@ -404,25 +406,31 @@ static bool tool_key(const struct json *args, struct result *r) {
 }
 
 static bool tool_wait(const struct json *args, struct result *r) {
-	double ms = 0, idle = 0, timeout = 5000;
+	double ms = 0, idle = 0, timeout = 5000, window = 0;
 	if (!arg_number(r, args, "ms", false, &ms) || !arg_number(r, args, "idle", false, &idle) ||
-			!arg_number(r, args, "timeout", false, &timeout))
+			!arg_number(r, args, "timeout", false, &timeout) ||
+			!arg_number(r, args, "window", false, &window))
 		return false;
+	const char *scope = json_get_string(args, "scope");
 	if (ms <= 0 && idle <= 0) idle = 200;
 	struct buf req = {0};
 	req_begin(&req, "wait");
 	req_num(&req, "ms", floor(ms));
 	req_num(&req, "idle", floor(idle));
 	req_num(&req, "timeout", floor(timeout));
+	if (window > 0) req_num(&req, "window", window);
+	if (scope) req_str(&req, "scope", scope);
 	struct json *answer;
 	bool ok = shady(r, &req, (int)(ms > timeout ? ms : timeout) + DEFAULT_TIMEOUT_MS, &answer);
 	buf_free(&req);
 	if (ok) {
 		const struct json *settled = json_get(data_of(answer), "settled");
-		result_text(r, "%s after %g ms",
-			settled && settled->type == JSON_BOOL && settled->boolean ?
-				"settled" : "still changing",
-			json_get_number(data_of(answer), "elapsed", 0));
+		const char *active = json_get_string(data_of(answer), "active");
+		if (settled && settled->type == JSON_BOOL && settled->boolean)
+			result_text(r, "settled after %g ms", json_get_number(data_of(answer), "elapsed", 0));
+		else
+			result_text(r, "still changing after %g ms%s%s", json_get_number(data_of(answer), "elapsed", 0),
+				active ? ": the last change was " : "", active ? active : "");
 	}
 	json_free(answer);
 	return ok;
@@ -561,10 +569,12 @@ static const struct tool {
 	  "\"action\":{\"type\":\"string\",\"enum\":[\"press\",\"down\",\"up\"],\"description\":\"down/up hold and release it. Default press.\"}},"
 	  "\"required\":[\"keys\"]}",
 	  tool_key },
-	{ "wait", "Wait: at least ms, then until nothing new has been drawn for idle ms (default 200), up to timeout.",
+	{ "wait", "Wait: at least ms, then until the windows have not changed for idle ms (default 200), up to timeout. A bar's clock or an animated wallpaper does not count. Says what kept changing if it does not settle.",
 	  "{\"type\":\"object\",\"properties\":{"
 	  "\"ms\":{\"type\":\"integer\"},\"idle\":{\"type\":\"integer\"},"
-	  "\"timeout\":{\"type\":\"integer\",\"description\":\"Default 5000.\"}}}",
+	  "\"timeout\":{\"type\":\"integer\",\"description\":\"Default 5000.\"},"
+	  "\"window\":{\"type\":\"integer\",\"description\":\"Only this window (and windows moving), for a busy desktop.\"},"
+	  "\"scope\":{\"type\":\"string\",\"enum\":[\"windows\",\"screen\"],\"description\":\"screen: every frame drawn. Default windows.\"}}}",
 	  tool_wait },
 	{ "windows", "List the windows: id, app id, title, workspace, focus and where they are, also in the latest screenshot.",
 	  "{\"type\":\"object\",\"properties\":{}}",

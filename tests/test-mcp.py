@@ -136,6 +136,10 @@ def scenario(mcp, sock, out_file):
     check("sent to the focused window" in text_of(mcp.tool("key", keys="Return")), "Return")
     wait_for(lambda: out_file.exists() and out_file.read_text() == line, "the line in foot")
     check("settled" in text_of(mcp.tool("wait", idle=100)), "wait")
+    check("settled after" in text_of(mcp.tool("wait", idle=100, window=foot["id"])), "wait on a window")
+    # idle longer than timeout: it cannot settle, and says so.
+    check("still changing" in text_of(mcp.tool("wait", scope="screen", idle=5000, timeout=300)),
+          "a wait that cannot settle in time")
 
     # A window screenshot maps from the window's corner.
     shot = mcp.tool("screenshot", window=foot["id"])
