@@ -28,7 +28,9 @@ screenshot from that window's corner. Before any screenshot they are
 Shady's layout coordinates.
 
 Shady 0.4.0 or later is needed: keys and text reach windows, and the
-pointer and screenshot commands this uses are there.
+pointer and screenshot commands this uses are there. With 0.4.1 or later,
+`wait` and the screenshot's settling ignore bars and wallpapers, so they
+settle on a real desktop.
 
 ## Install
 

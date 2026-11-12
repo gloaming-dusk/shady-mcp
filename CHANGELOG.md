@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `wait` takes `window` and `scope` and says what kept changing; a window
+  screenshot settles on that window. With Shady 0.4.1 a wait ignores bars
+  and wallpapers.
 - Connected to a Shady older than 0.4.0, tools say so instead of answering
   "unknown command", and `key` no longer reports a key that went nowhere
   as missing from the keymap.
