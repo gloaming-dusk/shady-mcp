@@ -96,9 +96,13 @@ def scenario(mcp, sock, out_file):
     check(init["result"]["protocolVersion"] == "2025-06-18", f"initialize {init}")
     check(init["result"]["capabilities"] == {"tools": {}}, "capabilities")
     mcp.notify("notifications/initialized")
-    names = {t["name"] for t in mcp.request("tools/list")["result"]["tools"]}
+    tools = {t["name"]: t for t in mcp.request("tools/list")["result"]["tools"]}
+    names = set(tools)
     check({"screenshot", "click", "move", "drag", "scroll", "type", "key", "wait",
-           "windows", "focus_window", "shady_ipc"} <= names, f"tools {names}")
+           "windows", "focus_window", "launch", "shady_ipc"} <= names, f"tools {names}")
+    check(tools["screenshot"]["annotations"]["readOnlyHint"] is True, "screenshot is read-only")
+    check(tools["click"]["annotations"]["readOnlyHint"] is False, "click acts")
+    check("description" in tools["drag"]["inputSchema"]["properties"]["x1"], "drag points documented")
     check(mcp.request("ping")["result"] == {}, "ping")
     check(mcp.request("no/such")["error"]["code"] == -32601, "unknown method")
 
@@ -147,6 +151,32 @@ def scenario(mcp, sock, out_file):
     mcp.tool("move", x=10, y=20)
     pointer = ipc(sock, "pointer")["data"]
     check((pointer["x"], pointer["y"]) == (foot["x"] + 10, foot["y"] + 20), f"window shot mapping {pointer}")
+
+    # Zoom: a region of a half-size screenshot comes back at full size,
+    # and its pixels map from the region's corner.
+    mcp.tool("screenshot", max_width=ow // 2)
+    zoom = mcp.tool("screenshot", x=50, y=40, width=100, height=60)
+    png = base64.b64decode(next(c for c in zoom if c["type"] == "image")["data"])
+    check(struct.unpack(">II", png[16:24]) == (200, 120), f"zoom size {struct.unpack('>II', png[16:24])}")
+    check("200x120 screenshot of a region" in text_of(zoom), text_of(zoom))
+    mcp.tool("move", x=10, y=20)
+    pointer = ipc(sock, "pointer")["data"]
+    check((pointer["x"], pointer["y"]) == (110, 100), f"zoom mapping {pointer}")
+    mcp.tool("screenshot", ok=False, x=1, y=1, width=10)
+    mcp.tool("screenshot", ok=False, x=1, y=1, width=10, height=10, window=foot["id"])
+
+    # An action can show what it did.
+    moved = mcp.tool("move", x=5, y=5, screenshot=True)
+    check(any(c["type"] == "image" for c in moved) and "pointer at" in text_of(moved),
+          f"move with screenshot: {text_of(moved)}")
+    check(not any(c["type"] == "image" for c in mcp.tool("move", x=6, y=6)), "no screenshot unasked")
+    mcp.tool("click", ok=False, x=1, y=1, count=5)
+
+    # Launch a program: it says which window is its.
+    launched = text_of(mcp.tool("launch", command=f"{shutil.which('foot') or 'foot'} -a launched-foot"))
+    check("launched-foot" in launched and "window" in launched, f"launch: {launched}")
+    check(any(w["app_id"] == "launched-foot" for w in ipc(sock, "windows")["data"]), "launched window")
+    mcp.tool("launch", ok=False, command="")
 
     # Anything else through shady_ipc; errors are tool errors.
     check('"protocol":1' in text_of(mcp.tool("shady_ipc", cmd="version")), "shady_ipc version")

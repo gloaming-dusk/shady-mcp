@@ -10,7 +10,7 @@ stdout and turns each tool call into a request on Shady's IPC socket.
 
 | Tool | What it does |
 |---|---|
-| `screenshot` | The screen (or one `window`) as a PNG image, after it stops changing, scaled to 1280×800 at most |
+| `screenshot` | The screen (or one `window`, or an `output`) as a PNG image, after it stops changing, scaled to 1280×800 at most; `x`, `y`, `width`, `height` zoom into a region to read small text |
 | `click` | Click at a point: `button`, `count` 2 for a double click |
 | `move` | Move the pointer, to hover |
 | `drag` | Press, move over `duration` ms, release |
@@ -20,12 +20,20 @@ stdout and turns each tool call into a request on Shady's IPC socket.
 | `wait` | Until nothing new has been drawn for `idle` ms |
 | `windows` | The windows, their ids and where they are |
 | `focus_window` | Focus a window, switching to its workspace |
+| `launch` | Start a program by its shell command and wait for its window |
 | `shady_ipc` | Any other [IPC command](https://github.com/gloaming-dusk/shady/blob/main/docs/IPC_API.md): workspaces, `window.close`, `lua`, ... |
 
 **Coordinates are pixels of the latest screenshot**, so an agent clicks
 where it looked, whatever the output's size and scale, and in a window
 screenshot from that window's corner. Before any screenshot they are
-Shady's layout coordinates.
+Shady's layout coordinates. A zoomed screenshot's region is given in
+pixels of the screenshot before it, and its own pixels are what later
+coordinates mean.
+
+`click`, `move`, `drag`, `scroll`, `type`, `key` and `launch` take
+`screenshot: true` to answer with a settled screenshot of the screen too,
+so look, act and look again is one call. Every tool carries MCP
+annotations: `screenshot`, `wait` and `windows` are read-only.
 
 Shady 0.4.0 or later is needed: keys and text reach windows, and the
 pointer and screenshot commands this uses are there. With 0.4.1 or later,

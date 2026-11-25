@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "ipc.h"
@@ -213,22 +214,24 @@ static bool read_file(const char *path, struct buf *out) {
 	return ok;
 }
 
-static bool tool_screenshot(const struct json *args, struct result *r) {
-	double max_w = 1280, max_h = 800, window = 0;
-	if (!arg_number(r, args, "max_width", false, &max_w) ||
-			!arg_number(r, args, "max_height", false, &max_h) ||
-			!arg_number(r, args, "window", false, &window))
-		return false;
-	const struct json *settle = json_get(args, "settle");
+struct shot_options {
+	double max_w, max_h, window;
+	bool settle;
+	bool region; /* lx, ly, lw, lh: a part of the layout, to zoom in */
+	double lx, ly, lw, lh;
+	const char *output;
+};
+
+static bool take_screenshot(const struct shot_options *o, struct result *r) {
 	struct json *answer = NULL;
-	if (!settle || settle->type != JSON_BOOL || settle->boolean) {
+	if (o->settle) {
 		/* What a person would see: once the windows (or this one) stop
 		 * changing. A bar's clock does not count. */
 		struct buf req = {0};
 		req_begin(&req, "wait");
 		req_num(&req, "idle", 150);
 		req_num(&req, "timeout", 1500);
-		if (window > 0) req_num(&req, "window", window);
+		if (o->window > 0) req_num(&req, "window", o->window);
 		bool ok = shady(r, &req, 5000, &answer);
 		buf_free(&req);
 		json_free(answer);
@@ -240,9 +243,16 @@ static bool tool_screenshot(const struct json *args, struct result *r) {
 	req_begin(&req, "screenshot");
 	req_str(&req, "path", path);
 	req_bool(&req, "wait", true);
-	if (max_w > 0) req_num(&req, "max_width", floor(max_w));
-	if (max_h > 0) req_num(&req, "max_height", floor(max_h));
-	if (window > 0) req_num(&req, "window", window);
+	if (o->max_w > 0) req_num(&req, "max_width", floor(o->max_w));
+	if (o->max_h > 0) req_num(&req, "max_height", floor(o->max_h));
+	if (o->window > 0) req_num(&req, "window", o->window);
+	if (o->output) req_str(&req, "output", o->output);
+	if (o->region) {
+		req_num(&req, "x", floor(o->lx));
+		req_num(&req, "y", floor(o->ly));
+		req_num(&req, "width", ceil(o->lw));
+		req_num(&req, "height", ceil(o->lh));
+	}
 	bool ok = shady(r, &req, 15000, &answer);
 	buf_free(&req);
 	if (!ok) return false;
@@ -270,11 +280,54 @@ static bool tool_screenshot(const struct json *args, struct result *r) {
 	const char *output = json_get_string(d, "output");
 	result_text(r, "%dx%d screenshot of %s%s, covering layout (%g, %g) %gx%g. "
 		"Coordinates for click, move, drag and scroll are now pixels of this image.",
-		S.shot.width, S.shot.height, window > 0 ? "a window on " : "",
+		S.shot.width, S.shot.height,
+		o->window > 0 ? "a window on " : o->region ? "a region of " : "",
 		output ? output : "the screen", S.shot.x, S.shot.y,
 		json_get_number(d, "logical_width", 0), json_get_number(d, "logical_height", 0));
 	json_free(answer);
 	return true;
+}
+
+static bool tool_screenshot(const struct json *args, struct result *r) {
+	struct shot_options o = { .max_w = 1280, .max_h = 800 };
+	if (!arg_number(r, args, "max_width", false, &o.max_w) ||
+			!arg_number(r, args, "max_height", false, &o.max_h) ||
+			!arg_number(r, args, "window", false, &o.window))
+		return false;
+	const struct json *settle = json_get(args, "settle");
+	o.settle = !settle || settle->type != JSON_BOOL || settle->boolean;
+	o.output = json_get_string(args, "output");
+
+	/* A region, in pixels of the latest screenshot like every other point,
+	 * to see it closer: small text, a crowded toolbar. */
+	bool has_x = json_has(args, "x"), has_y = json_has(args, "y");
+	bool has_w = json_has(args, "width"), has_h = json_has(args, "height");
+	if (has_x || has_y || has_w || has_h) {
+		if (!(has_x && has_y && has_w && has_h))
+			return result_fail(r, "a region needs x, y, width and height");
+		if (o.window > 0) return result_fail(r, "give a window or a region, not both");
+		double x = 0, y = 0, w = 0, h = 0;
+		if (!arg_number(r, args, "x", true, &x) || !arg_number(r, args, "y", true, &y) ||
+				!arg_number(r, args, "width", true, &w) ||
+				!arg_number(r, args, "height", true, &h))
+			return false;
+		if (w < 1 || h < 1) return result_fail(r, "width and height must be at least 1");
+		double scale = S.shot.valid ? S.shot.scale : 1;
+		to_layout(x, y, &o.lx, &o.ly);
+		o.lw = w / scale;
+		o.lh = h / scale;
+		o.region = true;
+	}
+	return take_screenshot(&o, r);
+}
+
+/* An action asked to show what it did: a settled screenshot of the whole
+ * screen after it, so look-act-look takes one call. */
+static bool after_action(const struct json *args, struct result *r, bool ok) {
+	const struct json *want = json_get(args, "screenshot");
+	if (!ok || !want || want->type != JSON_BOOL || !want->boolean) return ok;
+	struct shot_options o = { .max_w = 1280, .max_h = 800, .settle = true };
+	return take_screenshot(&o, r);
 }
 
 static bool tool_click(const struct json *args, struct result *r) {
@@ -282,6 +335,7 @@ static bool tool_click(const struct json *args, struct result *r) {
 	if (!arg_point(r, args, "x", "y", true, &x, &y, NULL) ||
 			!arg_number(r, args, "count", false, &count))
 		return false;
+	if (count < 1 || count > 3) return result_fail(r, "count is 1, 2 or 3");
 	struct buf req = {0};
 	req_begin(&req, "pointer.click");
 	req_num(&req, "x", x);
@@ -293,7 +347,7 @@ static bool tool_click(const struct json *args, struct result *r) {
 	buf_free(&req);
 	json_free(answer);
 	if (ok) result_text(r, "clicked at layout (%g, %g)", x, y);
-	return ok;
+	return after_action(args, r, ok);
 }
 
 static bool tool_move(const struct json *args, struct result *r) {
@@ -308,7 +362,7 @@ static bool tool_move(const struct json *args, struct result *r) {
 	buf_free(&req);
 	json_free(answer);
 	if (ok) result_text(r, "pointer at layout (%g, %g)", x, y);
-	return ok;
+	return after_action(args, r, ok);
 }
 
 static bool tool_drag(const struct json *args, struct result *r) {
@@ -317,6 +371,7 @@ static bool tool_drag(const struct json *args, struct result *r) {
 			!arg_point(r, args, "x2", "y2", true, &x2, &y2, NULL) ||
 			!arg_number(r, args, "duration", false, &duration))
 		return false;
+	if (duration < 0 || duration > 60000) return result_fail(r, "duration is 0 to 60000 ms");
 	struct buf req = {0};
 	req_begin(&req, "pointer.drag");
 	req_num(&req, "x1", x1);
@@ -330,7 +385,7 @@ static bool tool_drag(const struct json *args, struct result *r) {
 	buf_free(&req);
 	json_free(answer);
 	if (ok) result_text(r, "dragged from layout (%g, %g) to (%g, %g)", x1, y1, x2, y2);
-	return ok;
+	return after_action(args, r, ok);
 }
 
 static bool tool_scroll(const struct json *args, struct result *r) {
@@ -352,7 +407,7 @@ static bool tool_scroll(const struct json *args, struct result *r) {
 	buf_free(&req);
 	json_free(answer);
 	if (ok) result_text(r, "scrolled %g, %g wheel clicks", dx, dy);
-	return ok;
+	return after_action(args, r, ok);
 }
 
 static bool tool_type(const struct json *args, struct result *r) {
@@ -367,7 +422,7 @@ static bool tool_type(const struct json *args, struct result *r) {
 	if (ok) result_text(r, "typed %g characters",
 		json_get_number(data_of(answer), "typed", 0));
 	json_free(answer);
-	return ok;
+	return after_action(args, r, ok);
 }
 
 static bool tool_key(const struct json *args, struct result *r) {
@@ -402,7 +457,7 @@ static bool tool_key(const struct json *args, struct result *r) {
 		}
 	}
 	json_free(answer);
-	return ok;
+	return after_action(args, r, ok && !r->error);
 }
 
 static bool tool_wait(const struct json *args, struct result *r) {
@@ -485,6 +540,113 @@ static bool tool_focus_window(const struct json *args, struct result *r) {
 	return ok;
 }
 
+/* text as a Lua string literal: quotes, backslashes and control bytes
+ * escaped; UTF-8 passes through. */
+static void lua_string(struct buf *b, const char *text) {
+	buf_puts(b, "\"");
+	for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+		if (*p == '"' || *p == '\\') buf_printf(b, "\\%c", *p);
+		else if (*p < 0x20 || *p == 0x7f) buf_printf(b, "\\%03u", *p);
+		else buf_append(b, (const char *)p, 1);
+	}
+	buf_puts(b, "\"");
+}
+
+/* The windows Shady has now (free the answer). */
+static bool list_windows(struct result *r, struct json **answer) {
+	struct buf req = {0};
+	req_begin(&req, "windows");
+	bool ok = shady(r, &req, DEFAULT_TIMEOUT_MS, answer);
+	buf_free(&req);
+	return ok;
+}
+
+static bool has_window(const struct json *list, double id) {
+	for (size_t i = 0; list && list->type == JSON_ARRAY && i < list->count; i++)
+		if (json_get_number(list->items[i], "id", -1) == id) return true;
+	return false;
+}
+
+static double now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
+/* Start a program as Super+Return would, and wait for its window. */
+static bool tool_launch(const struct json *args, struct result *r) {
+	const char *command = json_get_string(args, "command");
+	if (!command || !*command) return result_fail(r, "missing string argument: command");
+	double timeout = 5000;
+	if (!arg_number(r, args, "timeout", false, &timeout)) return false;
+	if (timeout < 0 || timeout > 60000) return result_fail(r, "timeout is 0 to 60000 ms");
+
+	struct json *before = NULL;
+	if (!list_windows(r, &before)) return false;
+
+	struct buf req = {0};
+	req_begin(&req, "lua");
+	buf_puts(&req, ",\"name\":\"=shady-mcp launch\",\"code\":");
+	struct buf code = {0};
+	buf_puts(&code, "return shady.spawn(");
+	lua_string(&code, command);
+	buf_puts(&code, ")");
+	buf_string(&req, code.data, code.len);
+	buf_free(&code);
+	struct json *answer = NULL;
+	bool ok = shady(r, &req, DEFAULT_TIMEOUT_MS, &answer);
+	buf_free(&req);
+	if (!ok) {
+		json_free(before);
+		return false;
+	}
+	const struct json *ret = data_of(answer);
+	const struct json *spawned = ret && ret->type == JSON_ARRAY && ret->count ? ret->items[0] : NULL;
+	bool started = spawned && spawned->type == JSON_BOOL && spawned->boolean;
+	json_free(answer);
+	if (!started) {
+		json_free(before);
+		return result_fail(r, "Shady could not start: %s", command);
+	}
+
+	/* A new window, mapped: the program is up. Polled, since one IPC
+	 * request is one connection here. */
+	const struct json *found = NULL;
+	struct json *now = NULL;
+	double end = now_ms() + timeout;
+	while (!found) {
+		json_free(now);
+		now = NULL;
+		if (!list_windows(r, &now)) {
+			json_free(before);
+			return false;
+		}
+		const struct json *list = data_of(now);
+		for (size_t i = 0; list && list->type == JSON_ARRAY && i < list->count; i++) {
+			double id = json_get_number(list->items[i], "id", -1);
+			if (!has_window(data_of(before), id)) {
+				found = list->items[i];
+				break;
+			}
+		}
+		if (found || now_ms() >= end) break;
+		struct timespec pause = { 0, 100 * 1000000L };
+		nanosleep(&pause, NULL);
+	}
+	if (found) {
+		const char *app = json_get_string(found, "app_id");
+		const char *title = json_get_string(found, "title");
+		result_text(r, "started %s: window %g, %s \"%s\"", command,
+			json_get_number(found, "id", 0), app ? app : "?", title ? title : "");
+	} else {
+		result_text(r, "started %s; no new window within %g ms (it may still be starting, "
+			"or have no window)", command, timeout);
+	}
+	json_free(now);
+	json_free(before);
+	return after_action(args, r, true);
+}
+
 /* Any IPC command, for what the other tools do not cover. */
 static bool tool_ipc(const struct json *args, struct result *r) {
 	const char *cmd = json_get_string(args, "cmd");
@@ -516,77 +678,99 @@ static bool tool_ipc(const struct json *args, struct result *r) {
 }
 
 #define POINT_DOC "Pixels of the latest screenshot (layout coordinates before any)."
-#define BUTTON_SCHEMA "\"button\":{\"type\":\"string\",\"enum\":[\"left\",\"right\",\"middle\",\"back\",\"forward\"],\"description\":\"Default left.\"}"
+#define BUTTON_SCHEMA "\"button\":{\"type\":\"string\",\"enum\":[\"left\",\"right\",\"middle\",\"side\",\"extra\",\"back\",\"forward\"],\"description\":\"Default left.\"}"
+#define SHOT_AFTER "\"screenshot\":{\"type\":\"boolean\",\"description\":\"Then take a screenshot of the screen, once it settles, to see what happened. Default false.\"}"
+#define POINT_PROP(name) "\"" name "\":{\"type\":\"number\",\"description\":\"" POINT_DOC "\"}"
+
+/* MCP tool annotations: hints for a client deciding what to ask about. */
+#define LOOKS(title) "{\"title\":\"" title "\",\"readOnlyHint\":true,\"openWorldHint\":false}"
+#define ACTS(title) "{\"title\":\"" title "\",\"readOnlyHint\":false,\"destructiveHint\":true,\"openWorldHint\":false}"
+#define HARMLESS(title) "{\"title\":\"" title "\",\"readOnlyHint\":false,\"destructiveHint\":false,\"idempotentHint\":true,\"openWorldHint\":false}"
 
 static const struct tool {
 	const char *name;
 	const char *description;
 	const char *schema;
+	const char *annotations;
 	bool (*run)(const struct json *args, struct result *r);
 } tools[] = {
 	{ "screenshot",
-	  "See the screen, after it stops changing. Later click/move/drag/scroll coordinates are pixels of this image.",
+	  "See the screen, after it stops changing. Later click/move/drag/scroll coordinates are pixels of this image. "
+	  "To read small text, zoom in: x, y, width, height pick a region of the latest screenshot, captured closer.",
 	  "{\"type\":\"object\",\"properties\":{"
 	  "\"window\":{\"type\":\"integer\",\"description\":\"Only this window (an id from windows).\"},"
+	  "\"x\":{\"type\":\"number\",\"description\":\"Region to zoom into: its left, in pixels of the latest screenshot.\"},"
+	  "\"y\":{\"type\":\"number\",\"description\":\"Region top, in pixels of the latest screenshot.\"},"
+	  "\"width\":{\"type\":\"number\",\"description\":\"Region width, in pixels of the latest screenshot.\"},"
+	  "\"height\":{\"type\":\"number\",\"description\":\"Region height, in pixels of the latest screenshot.\"},"
+	  "\"output\":{\"type\":\"string\",\"description\":\"Which output (monitor), by name as shady_ipc outputs gives it. Default the first to draw.\"},"
 	  "\"max_width\":{\"type\":\"integer\",\"description\":\"Scale down to at most this wide. Default 1280.\"},"
 	  "\"max_height\":{\"type\":\"integer\",\"description\":\"Scale down to at most this tall. Default 800.\"},"
 	  "\"settle\":{\"type\":\"boolean\",\"description\":\"Wait until nothing changes first. Default true.\"}}}",
-	  tool_screenshot },
+	  LOOKS("Screenshot"), tool_screenshot },
 	{ "click", "Move the pointer to a point and click there.",
 	  "{\"type\":\"object\",\"properties\":{"
-	  "\"x\":{\"type\":\"number\",\"description\":\"" POINT_DOC "\"},"
-	  "\"y\":{\"type\":\"number\",\"description\":\"" POINT_DOC "\"},"
-	  BUTTON_SCHEMA ","
-	  "\"count\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":3,\"description\":\"2 for a double click.\"}},"
+	  POINT_PROP("x") "," POINT_PROP("y") "," BUTTON_SCHEMA ","
+	  "\"count\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":3,\"description\":\"2 for a double click, 3 for a triple. Default 1.\"},"
+	  SHOT_AFTER "},"
 	  "\"required\":[\"x\",\"y\"]}",
-	  tool_click },
+	  ACTS("Click"), tool_click },
 	{ "move", "Move the pointer, to hover.",
 	  "{\"type\":\"object\",\"properties\":{"
-	  "\"x\":{\"type\":\"number\",\"description\":\"" POINT_DOC "\"},"
-	  "\"y\":{\"type\":\"number\",\"description\":\"" POINT_DOC "\"}},\"required\":[\"x\",\"y\"]}",
-	  tool_move },
+	  POINT_PROP("x") "," POINT_PROP("y") "," SHOT_AFTER "},\"required\":[\"x\",\"y\"]}",
+	  HARMLESS("Move pointer"), tool_move },
 	{ "drag", "Press at one point, move to another over a while, release: select text, move a window by its title bar, drag a slider.",
 	  "{\"type\":\"object\",\"properties\":{"
-	  "\"x1\":{\"type\":\"number\"},\"y1\":{\"type\":\"number\"},"
-	  "\"x2\":{\"type\":\"number\"},\"y2\":{\"type\":\"number\"},"
+	  POINT_PROP("x1") "," POINT_PROP("y1") "," POINT_PROP("x2") "," POINT_PROP("y2") ","
 	  BUTTON_SCHEMA ","
-	  "\"duration\":{\"type\":\"integer\",\"description\":\"Milliseconds. Default 400.\"}},"
-	  "\"required\":[\"x1\",\"y1\",\"x2\",\"y2\"],\"description\":\"" POINT_DOC "\"}",
-	  tool_drag },
+	  "\"duration\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":60000,\"description\":\"Milliseconds. Default 400.\"},"
+	  SHOT_AFTER "},"
+	  "\"required\":[\"x1\",\"y1\",\"x2\",\"y2\"]}",
+	  ACTS("Drag"), tool_drag },
 	{ "scroll", "Scroll by wheel clicks, at a point or where the pointer is.",
 	  "{\"type\":\"object\",\"properties\":{"
-	  "\"x\":{\"type\":\"number\",\"description\":\"" POINT_DOC "\"},"
-	  "\"y\":{\"type\":\"number\",\"description\":\"" POINT_DOC "\"},"
+	  POINT_PROP("x") "," POINT_PROP("y") ","
 	  "\"dy\":{\"type\":\"number\",\"description\":\"Wheel clicks; positive scrolls down.\"},"
-	  "\"dx\":{\"type\":\"number\",\"description\":\"Wheel clicks; positive scrolls right.\"}}}",
-	  tool_scroll },
+	  "\"dx\":{\"type\":\"number\",\"description\":\"Wheel clicks; positive scrolls right.\"},"
+	  SHOT_AFTER "}}",
+	  ACTS("Scroll"), tool_scroll },
 	{ "type", "Type text into the focused window. Any characters, Hangul and emoji included; \\n is Return.",
-	  "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}",
-	  tool_type },
+	  "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}," SHOT_AFTER "},\"required\":[\"text\"]}",
+	  ACTS("Type text"), tool_type },
 	{ "key", "Press a key or shortcut: Return, Escape, Tab, BackSpace, Up, ctrl+l, Ctrl+Shift+t, Super+Return. Compositor shortcuts run; other keys go to the focused window.",
 	  "{\"type\":\"object\",\"properties\":{"
 	  "\"keys\":{\"type\":\"string\",\"description\":\"Modifiers (Ctrl, Alt, Shift, Super) and one XKB key name, joined by +.\"},"
-	  "\"action\":{\"type\":\"string\",\"enum\":[\"press\",\"down\",\"up\"],\"description\":\"down/up hold and release it. Default press.\"}},"
+	  "\"action\":{\"type\":\"string\",\"enum\":[\"press\",\"down\",\"up\"],\"description\":\"down/up hold and release it. Default press.\"},"
+	  SHOT_AFTER "},"
 	  "\"required\":[\"keys\"]}",
-	  tool_key },
+	  ACTS("Press key"), tool_key },
 	{ "wait", "Wait: at least ms, then until the windows have not changed for idle ms (default 200), up to timeout. A bar's clock or an animated wallpaper does not count. Says what kept changing if it does not settle.",
 	  "{\"type\":\"object\",\"properties\":{"
-	  "\"ms\":{\"type\":\"integer\"},\"idle\":{\"type\":\"integer\"},"
-	  "\"timeout\":{\"type\":\"integer\",\"description\":\"Default 5000.\"},"
+	  "\"ms\":{\"type\":\"integer\",\"minimum\":0},\"idle\":{\"type\":\"integer\",\"minimum\":0},"
+	  "\"timeout\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"Default 5000.\"},"
 	  "\"window\":{\"type\":\"integer\",\"description\":\"Only this window (and windows moving), for a busy desktop.\"},"
 	  "\"scope\":{\"type\":\"string\",\"enum\":[\"windows\",\"screen\"],\"description\":\"screen: every frame drawn. Default windows.\"}}}",
-	  tool_wait },
+	  LOOKS("Wait"), tool_wait },
 	{ "windows", "List the windows: id, app id, title, workspace, focus and where they are, also in the latest screenshot.",
 	  "{\"type\":\"object\",\"properties\":{}}",
-	  tool_windows },
+	  LOOKS("List windows"), tool_windows },
 	{ "focus_window", "Focus a window, switching to its workspace.",
 	  "{\"type\":\"object\",\"properties\":{\"window\":{\"type\":\"integer\"}},\"required\":[\"window\"]}",
-	  tool_focus_window },
+	  HARMLESS("Focus window"), tool_focus_window },
+	{ "launch", "Start a program, as a launcher would: a shell command such as foot, firefox or 'foot -e htop'. Waits for its window and says which it is.",
+	  "{\"type\":\"object\",\"properties\":{"
+	  "\"command\":{\"type\":\"string\",\"description\":\"Run by /bin/sh -lc in the session.\"},"
+	  "\"timeout\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":60000,\"description\":\"How long to wait for a new window, ms. 0 to not wait. Default 5000.\"},"
+	  SHOT_AFTER "},"
+	  "\"required\":[\"command\"]}",
+	  "{\"title\":\"Launch program\",\"readOnlyHint\":false,\"destructiveHint\":true,\"openWorldHint\":true}",
+	  tool_launch },
 	{ "shady_ipc", "Any Shady IPC command, such as workspaces, workspace.switch, window.close, window.maximize, outputs or lua. See Shady's docs/IPC_API.md. Coordinates here are layout coordinates.",
 	  "{\"type\":\"object\",\"properties\":{"
 	  "\"cmd\":{\"type\":\"string\"},"
 	  "\"args\":{\"type\":\"object\",\"description\":\"The command's arguments: strings, numbers, booleans or arrays of strings.\"}},"
 	  "\"required\":[\"cmd\"]}",
+	  "{\"title\":\"Shady IPC\",\"readOnlyHint\":false,\"destructiveHint\":true,\"openWorldHint\":true}",
 	  tool_ipc },
 };
 #define TOOL_COUNT (sizeof(tools) / sizeof(tools[0]))
@@ -597,8 +781,10 @@ static const char *instructions =
 	"Shady is a Wayland desktop. Work it as a person does: take a screenshot, "
 	"act (click, type, key, drag, scroll), then take another screenshot to see "
 	"what changed. Coordinates are pixels of the latest screenshot. Type text "
-	"with `type`; press Return, Tab or shortcuts with `key`. `windows` lists "
-	"the windows with their ids; `shady_ipc` reaches anything else.";
+	"with `type`; press Return, Tab or shortcuts with `key`. Start programs "
+	"with `launch`. To read small text, zoom: `screenshot` with a region. "
+	"Actions take `screenshot: true` to show what they did in the same call. "
+	"`windows` lists the windows with their ids; `shady_ipc` reaches anything else.";
 
 static void send_message(struct buf *msg) {
 	buf_puts(msg, "\n");
@@ -656,6 +842,8 @@ static void handle_tools_list(const struct json *id) {
 		buf_cstring(&res, tools[i].description);
 		buf_puts(&res, ",\"inputSchema\":");
 		buf_puts(&res, tools[i].schema);
+		buf_puts(&res, ",\"annotations\":");
+		buf_puts(&res, tools[i].annotations);
 		buf_puts(&res, "}");
 	}
 	buf_puts(&res, "]}");
