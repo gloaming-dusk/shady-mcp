@@ -3,7 +3,7 @@
 ## Unreleased
 
 - A region `screenshot` asks Shady to upscale it, so with a Shady that can
-  (after 0.5.1) small text comes back up to four times larger instead of
+  (0.5.3 or later) small text comes back up to four times larger instead of
   at the screen's own size.
 - `launch` learns the command's exit status: a command that is not there
   (127), cannot run (126) or fails before it has a window is an error at

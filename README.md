@@ -28,7 +28,7 @@ where it looked, whatever the output's size and scale, and in a window
 screenshot from that window's corner. Before any screenshot they are
 Shady's layout coordinates. A zoomed screenshot's region is given in
 pixels of the screenshot before it, and its own pixels are what later
-coordinates mean. A Shady with `upscale` (after 0.5.1) enlarges the region
+coordinates mean. Shady 0.5.3 or later enlarges the region
 up to four times to fit 1280×800, so small text comes back large; an older
 one gives it at the screen's own size.
 
