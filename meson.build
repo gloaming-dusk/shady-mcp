@@ -1,4 +1,4 @@
-project('shady-mcp', 'c', version: '0.2.0',
+project('shady-mcp', 'c', version: '0.2.1',
   license: 'Apache-2.0',
   default_options: ['buildtype=debugoptimized', 'c_std=c11', 'warning_level=2'])
 

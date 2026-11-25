@@ -14,7 +14,7 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       packageFor = pkgs: pkgs.stdenv.mkDerivation {
         pname = "shady-mcp";
-        version = "0.2.0";
+        version = "0.2.1";
         src = self;
         nativeBuildInputs = with pkgs; [ meson ninja ];
         meta = {

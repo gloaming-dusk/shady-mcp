@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (2026-11-25)
 
 - A region `screenshot` asks Shady to upscale it, so with a Shady that can
   (0.5.3 or later) small text comes back up to four times larger instead of
@@ -14,6 +14,7 @@
 - With no Shady socket but a Wayland display in `XDG_RUNTIME_DIR`, the
   error says Shady's IPC may be off, and why it might be.
 - The test keeps the user's config out of its headless Shady.
+- The tests run against Shady 0.5.3.
 
 ## 0.2.0 (2026-11-25)
 

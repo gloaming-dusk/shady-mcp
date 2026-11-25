@@ -29,11 +29,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794456771,
-        "narHash": "sha256-j3gzHkBijNLM7Hh5bZl/w1KSq0++40DpyzGtBh/SmfU=",
+        "lastModified": 1795607690,
+        "narHash": "sha256-1P/8bk3RJQ1id3yfN0TMxAow7cdjUZ+bdC1D427hlH0=",
         "owner": "gloaming-dusk",
         "repo": "shady",
-        "rev": "8969ce3eec12f8f70c6e9c51133604cfd14f0290",
+        "rev": "4b36681dc6c972d553d2b0d629b00441b1b0896f",
         "type": "github"
       },
       "original": {
