@@ -152,14 +152,17 @@ def scenario(mcp, sock, out_file):
     pointer = ipc(sock, "pointer")["data"]
     check((pointer["x"], pointer["y"]) == (foot["x"] + 10, foot["y"] + 20), f"window shot mapping {pointer}")
 
-    # Zoom: a region of a half-size screenshot comes back at full size,
-    # and its pixels map from the region's corner.
+    # Zoom: a region of a half-size screenshot comes back at the screen's
+    # size, or 4 times that where Shady upscales, and its pixels map from
+    # the region's corner.
     mcp.tool("screenshot", max_width=ow // 2)
     zoom = mcp.tool("screenshot", x=50, y=40, width=100, height=60)
     png = base64.b64decode(next(c for c in zoom if c["type"] == "image")["data"])
-    check(struct.unpack(">II", png[16:24]) == (200, 120), f"zoom size {struct.unpack('>II', png[16:24])}")
-    check("200x120 screenshot of a region" in text_of(zoom), text_of(zoom))
-    mcp.tool("move", x=10, y=20)
+    size = struct.unpack(">II", png[16:24])
+    check(size in ((200, 120), (800, 480)), f"zoom size {size}")
+    k = size[0] // 200
+    check(f"{size[0]}x{size[1]} screenshot of a region" in text_of(zoom), text_of(zoom))
+    mcp.tool("move", x=10 * k, y=20 * k)
     pointer = ipc(sock, "pointer")["data"]
     check((pointer["x"], pointer["y"]) == (110, 100), f"zoom mapping {pointer}")
     mcp.tool("screenshot", ok=False, x=1, y=1, width=10)
@@ -177,6 +180,14 @@ def scenario(mcp, sock, out_file):
     check("launched-foot" in launched and "window" in launched, f"launch: {launched}")
     check(any(w["app_id"] == "launched-foot" for w in ipc(sock, "windows")["data"]), "launched window")
     mcp.tool("launch", ok=False, command="")
+    # A command that is not there, or fails, says so at once.
+    start = time.monotonic()
+    missing = text_of(mcp.tool("launch", ok=False, command="no-such-program-shady-mcp", timeout=10000))
+    check("command not found" in missing and time.monotonic() - start < 3, f"missing: {missing}")
+    failed = text_of(mcp.tool("launch", ok=False, command="sh -c 'exit 3'", timeout=10000))
+    check("status 3" in failed, f"failed: {failed}")
+    done = text_of(mcp.tool("launch", command="true", timeout=10000))
+    check("finished (status 0)" in done and time.monotonic() - start < 6, f"true: {done}")
 
     # Anything else through shady_ipc; errors are tool errors.
     check('"protocol":1' in text_of(mcp.tool("shady_ipc", cmd="version")), "shady_ipc version")
@@ -207,7 +218,11 @@ def main():
         config.write_text('shady.set("spatial_mode", false)\n')
         env = {k: v for k, v in os.environ.items()
                if k not in ("WAYLAND_DISPLAY", "WAYLAND_SOCKET", "SHADY_SOCKET")}
-        env.update({"XDG_RUNTIME_DIR": str(runtime), "WLR_BACKENDS": "headless",
+        # An empty config home: not the user's init.lua, foot.ini and the like.
+        config_home = tmp / "config"
+        config_home.mkdir()
+        env.update({"XDG_RUNTIME_DIR": str(runtime), "XDG_CONFIG_HOME": str(config_home),
+                    "WLR_BACKENDS": "headless",
                     "WLR_HEADLESS_OUTPUTS": "1", "WLR_RENDERER": "pixman",
                     "XKB_DEFAULT_LAYOUT": "us", "SHADY_RICE": "none",
                     "ASAN_OPTIONS": "detect_leaks=0"})

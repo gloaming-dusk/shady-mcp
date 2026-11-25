@@ -33,10 +33,13 @@ bool ipc_socket_path(const char *override, char *out, size_t size,
 	/* Not started from inside the session: the only Shady running. */
 	DIR *dir = opendir(runtime);
 	int found = 0;
+	bool wayland = false;
 	if (dir) {
 		struct dirent *e;
 		while ((e = readdir(dir))) {
 			size_t n = strlen(e->d_name);
+			if (!strncmp(e->d_name, "wayland-", 8) && strcmp(e->d_name + n - 5, ".lock") != 0)
+				wayland = true;
 			if (n > 11 && !strncmp(e->d_name, "shady-", 6) &&
 					!strcmp(e->d_name + n - 5, ".sock")) {
 				if (!found) snprintf(out, size, "%s/%s", runtime, e->d_name);
@@ -46,8 +49,15 @@ bool ipc_socket_path(const char *override, char *out, size_t size,
 		closedir(dir);
 	}
 	if (found == 1) return true;
-	snprintf(error, error_size, found ? "several Shady sockets in %s: set SHADY_SOCKET" :
-		"Shady is not running (no shady-*.sock in %s)", runtime);
+	if (found)
+		snprintf(error, error_size, "several Shady sockets in %s: set SHADY_SOCKET", runtime);
+	else if (wayland)
+		/* A compositor is there: Shady with its IPC off, or another one. */
+		snprintf(error, error_size, "no Shady IPC socket in %s, though a Wayland display is "
+			"there: if it is Shady, its IPC is off, and its log says why (the socket's "
+			"path is over 107 bytes, for one)", runtime);
+	else
+		snprintf(error, error_size, "Shady is not running (no shady-*.sock in %s)", runtime);
 	return false;
 }
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- A region `screenshot` asks Shady to upscale it, so with a Shady that can
+  (after 0.5.1) small text comes back up to four times larger instead of
+  at the screen's own size.
+- `launch` learns the command's exit status: a command that is not there
+  (127), cannot run (126) or fails before it has a window is an error at
+  once, instead of a wait for a window that will not come. One that
+  finishes well without a window says so after a second.
+- shady-mcp stopped by SIGTERM, SIGINT or SIGHUP leaves no screenshot
+  directory behind.
+- With no Shady socket but a Wayland display in `XDG_RUNTIME_DIR`, the
+  error says Shady's IPC may be off, and why it might be.
+- The test keeps the user's config out of its headless Shady.
+
 ## 0.2.0 (2026-11-25)
 
 - `screenshot` zooms: `x`, `y`, `width`, `height` capture a region of the

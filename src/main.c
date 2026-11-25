@@ -5,6 +5,7 @@
  * pixels of the latest screenshot, so an agent clicks where it looked.
  */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <math.h>
 #include <signal.h>
@@ -252,6 +253,9 @@ static bool take_screenshot(const struct shot_options *o, struct result *r) {
 		req_num(&req, "y", floor(o->ly));
 		req_num(&req, "width", ceil(o->lw));
 		req_num(&req, "height", ceil(o->lh));
+		/* Larger, to read: a Shady without upscale ignores it and gives the
+		 * region at its own size. */
+		req_bool(&req, "upscale", true);
 	}
 	bool ok = shady(r, &req, 15000, &answer);
 	buf_free(&req);
@@ -573,7 +577,29 @@ static double now_ms(void) {
 	return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
 }
 
-/* Start a program as Super+Return would, and wait for its window. */
+/* text as one single-quoted shell word. */
+static void sh_quote(struct buf *b, const char *text) {
+	buf_puts(b, "'");
+	for (const char *p = text; *p; p++) {
+		if (*p == '\'') buf_puts(b, "'\\''");
+		else buf_append(b, p, 1);
+	}
+	buf_puts(b, "'");
+}
+
+/* The exit status the launch shell left in path, or -1 while it runs. */
+static int read_status(const char *path) {
+	FILE *f = fopen(path, "r");
+	if (!f) return -1;
+	int status = -1;
+	if (fscanf(f, "%d", &status) != 1) status = -1;
+	fclose(f);
+	return status;
+}
+
+/* Start a program as Super+Return would, and wait for its window. The
+ * shell leaves the command's exit status in a file, so a command that is
+ * not there, or that fails before it has a window, says so at once. */
 static bool tool_launch(const struct json *args, struct result *r) {
 	const char *command = json_get_string(args, "command");
 	if (!command || !*command) return result_fail(r, "missing string argument: command");
@@ -584,13 +610,24 @@ static bool tool_launch(const struct json *args, struct result *r) {
 	struct json *before = NULL;
 	if (!list_windows(r, &before)) return false;
 
+	char status_path[4200];
+	snprintf(status_path, sizeof(status_path), "%s/launch-%u.status", S.shot_dir, ++S.shot_seq);
+	/* The command on lines of its own, so a trailing comment or & stays
+	 * its own; the status written quietly, in case we have gone. */
+	struct buf script = {0};
+	buf_puts(&script, command);
+	buf_puts(&script, "\n{ printf '%s' \"$?\" >");
+	sh_quote(&script, status_path);
+	buf_puts(&script, "; } 2>/dev/null");
+
+	struct buf code = {0};
+	buf_puts(&code, "return shady.spawn(");
+	lua_string(&code, script.data);
+	buf_puts(&code, ")");
+	buf_free(&script);
 	struct buf req = {0};
 	req_begin(&req, "lua");
 	buf_puts(&req, ",\"name\":\"=shady-mcp launch\",\"code\":");
-	struct buf code = {0};
-	buf_puts(&code, "return shady.spawn(");
-	lua_string(&code, command);
-	buf_puts(&code, ")");
 	buf_string(&req, code.data, code.len);
 	buf_free(&code);
 	struct json *answer = NULL;
@@ -610,9 +647,12 @@ static bool tool_launch(const struct json *args, struct result *r) {
 	}
 
 	/* A new window, mapped: the program is up. Polled, since one IPC
-	 * request is one connection here. */
+	 * request is one connection here. A command that finished well may
+	 * have handed its window to a program already running (a browser
+	 * opening a tab): a moment more for that. */
 	const struct json *found = NULL;
 	struct json *now = NULL;
+	int status = -1;
 	double end = now_ms() + timeout;
 	while (!found) {
 		json_free(now);
@@ -630,21 +670,38 @@ static bool tool_launch(const struct json *args, struct result *r) {
 			}
 		}
 		if (found || now_ms() >= end) break;
+		if (status < 0 && (status = read_status(status_path)) >= 0) {
+			if (status != 0) break;
+			if (end > now_ms() + 1000) end = now_ms() + 1000;
+		}
 		struct timespec pause = { 0, 100 * 1000000L };
 		nanosleep(&pause, NULL);
 	}
+	if (status < 0) status = read_status(status_path);
+	if (status >= 0) unlink(status_path);
+	json_free(before);
+
+	bool shown = true;
 	if (found) {
 		const char *app = json_get_string(found, "app_id");
 		const char *title = json_get_string(found, "title");
 		result_text(r, "started %s: window %g, %s \"%s\"", command,
 			json_get_number(found, "id", 0), app ? app : "?", title ? title : "");
+	} else if (status == 127) {
+		shown = result_fail(r, "%s: command not found (the shell's status 127)", command);
+	} else if (status == 126) {
+		shown = result_fail(r, "%s: found but cannot be run (the shell's status 126)", command);
+	} else if (status > 0) {
+		shown = result_fail(r, "%s exited with status %d before it opened a window", command, status);
+	} else if (status == 0) {
+		result_text(r, "%s finished (status 0) and no new window came within a second of it; "
+			"anything it started in the background may still open one", command);
 	} else {
-		result_text(r, "started %s; no new window within %g ms (it may still be starting, "
-			"or have no window)", command, timeout);
+		result_text(r, "started %s; still running, with no new window within %g ms "
+			"(it may still be starting, or have no window)", command, timeout);
 	}
 	json_free(now);
-	json_free(before);
-	return after_action(args, r, true);
+	return after_action(args, r, shown);
 }
 
 /* Any IPC command, for what the other tools do not cover. */
@@ -757,7 +814,7 @@ static const struct tool {
 	{ "focus_window", "Focus a window, switching to its workspace.",
 	  "{\"type\":\"object\",\"properties\":{\"window\":{\"type\":\"integer\"}},\"required\":[\"window\"]}",
 	  HARMLESS("Focus window"), tool_focus_window },
-	{ "launch", "Start a program, as a launcher would: a shell command such as foot, firefox or 'foot -e htop'. Waits for its window and says which it is.",
+	{ "launch", "Start a program, as a launcher would: a shell command such as foot, firefox or 'foot -e htop'. Waits for its window and says which it is, or why it did not start.",
 	  "{\"type\":\"object\",\"properties\":{"
 	  "\"command\":{\"type\":\"string\",\"description\":\"Run by /bin/sh -lc in the session.\"},"
 	  "\"timeout\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":60000,\"description\":\"How long to wait for a new window, ms. 0 to not wait. Default 5000.\"},"
@@ -913,6 +970,29 @@ static void usage(FILE *out) {
 		"$XDG_RUNTIME_DIR/shady-$WAYLAND_DISPLAY.sock, else the only Shady running.\n");
 }
 
+static volatile sig_atomic_t quitting;
+
+static void on_quit_signal(int sig) {
+	(void)sig;
+	quitting = 1;
+}
+
+/* The screenshot directory and anything still in it. */
+static void remove_shot_dir(void) {
+	DIR *dir = opendir(S.shot_dir);
+	if (dir) {
+		struct dirent *e;
+		while ((e = readdir(dir))) {
+			if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+			char path[4400];
+			snprintf(path, sizeof(path), "%s/%s", S.shot_dir, e->d_name);
+			unlink(path);
+		}
+		closedir(dir);
+	}
+	rmdir(S.shot_dir);
+}
+
 int main(int argc, char **argv) {
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--socket") && i + 1 < argc) {
@@ -929,6 +1009,13 @@ int main(int argc, char **argv) {
 		}
 	}
 	signal(SIGPIPE, SIG_IGN);
+	/* An MCP client stops its server with a signal as often as by closing
+	 * stdin. Without SA_RESTART the read in getline gives up, and we tidy. */
+	struct sigaction quit = { .sa_handler = on_quit_signal };
+	sigemptyset(&quit.sa_mask);
+	sigaction(SIGTERM, &quit, NULL);
+	sigaction(SIGINT, &quit, NULL);
+	sigaction(SIGHUP, &quit, NULL);
 
 	/* Shady writes screenshots here and we read them back: private, and
 	 * where a sandboxed /tmp would not hide it from the compositor. */
@@ -943,12 +1030,12 @@ int main(int argc, char **argv) {
 	char *line = NULL;
 	size_t cap = 0;
 	ssize_t n;
-	while ((n = getline(&line, &cap, stdin)) >= 0) {
+	while (!quitting && (n = getline(&line, &cap, stdin)) >= 0) {
 		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
 		if (n == 0) continue;
 		handle_message(line, (size_t)n);
 	}
 	free(line);
-	rmdir(S.shot_dir);
+	remove_shot_dir();
 	return 0;
 }

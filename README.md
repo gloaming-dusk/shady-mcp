@@ -20,7 +20,7 @@ stdout and turns each tool call into a request on Shady's IPC socket.
 | `wait` | Until nothing new has been drawn for `idle` ms |
 | `windows` | The windows, their ids and where they are |
 | `focus_window` | Focus a window, switching to its workspace |
-| `launch` | Start a program by its shell command and wait for its window |
+| `launch` | Start a program by its shell command and wait for its window; a command that is not there, or fails first, says so at once |
 | `shady_ipc` | Any other [IPC command](https://github.com/gloaming-dusk/shady/blob/main/docs/IPC_API.md): workspaces, `window.close`, `lua`, ... |
 
 **Coordinates are pixels of the latest screenshot**, so an agent clicks
@@ -28,7 +28,9 @@ where it looked, whatever the output's size and scale, and in a window
 screenshot from that window's corner. Before any screenshot they are
 Shady's layout coordinates. A zoomed screenshot's region is given in
 pixels of the screenshot before it, and its own pixels are what later
-coordinates mean.
+coordinates mean. A Shady with `upscale` (after 0.5.1) enlarges the region
+up to four times to fit 1280×800, so small text comes back large; an older
+one gives it at the screen's own size.
 
 `click`, `move`, `drag`, `scroll`, `type`, `key` and `launch` take
 `screenshot: true` to answer with a settled screenshot of the screen too,
@@ -82,9 +84,15 @@ An agent can have a Shady of its own, headless, that is not your screen:
 
 ```sh
 export XDG_RUNTIME_DIR=$(mktemp -d) WLR_BACKENDS=headless WLR_RENDERER=pixman
-shady -s foot &
+XDG_CONFIG_HOME=$(mktemp -d) shady -s foot &
 claude mcp add shady-headless -e XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR -- shady-mcp
 ```
+
+The empty `XDG_CONFIG_HOME` keeps your own `init.lua` (and its key
+bindings and autostarts) out of the agent's desktop. Keep
+`XDG_RUNTIME_DIR` short: Shady's IPC socket goes there, and a Unix socket's
+path holds at most 107 bytes. Over that Shady turns its IPC off, and
+shady-mcp says so.
 
 ## Safety
 
