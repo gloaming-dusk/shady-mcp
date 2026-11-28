@@ -1,0 +1,34 @@
+-- Graft recipe for `shady-mcp` (Computer use MCP server for the Shady compositor)
+-- Replaces `flake.nix`!
+--
+-- Usage:
+--   graft check graft.graft
+--   graft build graft.graft
+--   graft run graft.graft -- --help
+--   graft develop graft.graft#dev
+
+import debian from registry.debian { release = "trixie", arch = "x86_64" }
+
+let toolchain = compose debian.{
+  bash,
+  coreutils,
+  gcc,
+  libc6-dev,
+  meson,
+  ninja-build,
+}
+
+let shady_mcp = build {
+  name = "shady-mcp",
+  toolchain = toolchain,
+  src = ./.,
+  main = "shady-mcp",
+  run = cmd "meson setup _build \"$SRC\" --prefix=/ --buildtype=release && ninja -C _build && DESTDIR=\"$OUT\" ninja -C _build install",
+}
+
+let default = shady_mcp
+
+let dev = shell {
+  env = toolchain,
+  hook = cmd "echo '[shady-mcp] Graft dev shell ready (gcc + meson + ninja)'",
+}
